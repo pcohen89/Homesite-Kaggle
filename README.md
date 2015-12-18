@@ -7,7 +7,8 @@
 - [ ] use lasso to select variables
 - [ ] use two layers of logistic regressions (both including and excluding original variables in the last step)
 - [ ] year X important variables are probably worth something, things change over time or so I hear?
-- 
+
+
 ## Things to try for random forest
 - [ ] try a random forest
 
