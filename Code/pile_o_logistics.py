@@ -5,6 +5,7 @@ import xgboost as xgb
 import numpy as np
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression, RidgeCV
+from sklearn.ensemble import RandomForestClassifier
 
 ############################### Define Globals ##############################
 ROOT = os.path.dirname(os.path.realpath('__file__'))
@@ -51,9 +52,9 @@ def create_feat_list(df, non_features):
         feats.remove(var)
     return feats
 
-def add_preds(val, test, model):
-    val_preds = model.predict_proba(val)[:, 1]
-    test_preds = model.predict_proba(test)[:, 1]
+def add_preds(v, t, model):
+    val_preds = model.predict_proba(v)[:, 1]
+    test_preds = model.predict_proba(t)[:, 1]
     return val_preds, test_preds
 
 
@@ -89,8 +90,14 @@ def normalize_cols(df):
 
 def select_cols(col_list, pct=.4):
     chosen = [(x < pct)[0] for x in list(np.random.rand(len(col_list), 1))]
-    return col_list[chosen]
+    return list(col_list[chosen])
 
+
+def create_x_and_y(df):
+    drop_cols = ['QuoteConversion_Flag', 'is_train', 'QuoteNumber']
+    X = df.drop(drop_cols, axis=1)
+    y = df.QuoteConversion_Flag
+    return X, y
 
 ############################### Executions ##############################
 
@@ -103,18 +110,29 @@ all_preds = []
 all_scores = 0
 
 for i, loop in enumerate([42, 417, 1, 2, 3, 4, 5]):
-    modeling, val = create_val_and_train(train, seed=loop, split_rt=.15)
-    drop_cols = ['QuoteConversion_Flag', 'is_train', 'QuoteNumber']
-    X_cln = modeling.drop(drop_cols, axis=1)
-    y = modeling.QuoteConversion_Flag
-    feats = select_cols(X_cln.columns, .95)
-    val_cln = val[feats]
-    test_cln = test[feats]
-    xgb_model = LogisticRegression(penalty='l2', C=1)
-    xgb_model.fit(X_cln[feats].values, y.values)
+    mod_train, val = create_val_and_train(train, seed=loop, split_rt=.15)
+    log_df, frst_df = create_val_and_train(mod_train, seed=loop, split_rt=.15)
+
+    log_X, log_y = create_x_and_y(log_df)
+    frst_X, frst_y = create_x_and_y(frst_df)
+
+    feats = select_cols(log_X.columns, .95)
+
+    val_X = val[feats]
+    test_X = test[feats]
+
+    frst = RandomForestClassifier(n_estimators=150, max_depth=20, n_jobs=2)
+    frst.fit(frst_X[feats], frst_y)
+
+    val_X['stage1'], test_X['stage1'] = add_preds(val_X, test_X, frst)
+    log_X['stage1'] = frst.predict_proba(log_X[feats])[:, 1]
+    feats.append('stage1')
+
+    logit = LogisticRegression(penalty='l2', C=1)
+    logit.fit(log_X[feats].values, log_y.values)
 
     name1 = 'pred' + str(loop)
-    val[name1], test[name1] = add_preds(val_cln, test_cln, xgb_model)
+    val[name1], test[name1] = add_preds(val_X, test_X, logit)
     all_scores = handle_scores(all_scores, name1)
 
     all_preds.append(name1)
@@ -123,7 +141,7 @@ for i, loop in enumerate([42, 417, 1, 2, 3, 4, 5]):
 
 
 title_score = int(10000*all_scores/(i+1))
-submission_title = 'running_10logitsticbetter_score{0}.csv'.format(title_score)
+submission_title = 'running_10logitwtree_score{0}.csv'.format(title_score)
 keep_cols = ['QuoteNumber', 'QuoteConversion_Flag']
 test['QuoteConversion_Flag'] = test[all_preds].mean(axis=1)
 test[keep_cols].to_csv(SUBM + submission_title, index=False)
