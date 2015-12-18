@@ -4,13 +4,12 @@ import pandas as pd
 import xgboost as xgb
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from sklearn import preprocessing
-from sklearn.cross_validation import train_test_split
+from sklearn.linear_model import LogisticRegression, RidgeCV
 
 ############################### Define Globals ##############################
 ROOT = os.path.dirname(os.path.realpath('__file__'))
 DATA = ROOT + '/Data/'
-SUBM = ROOT + '/Submissions/basic_XGB/'
+SUBM = ROOT + '/Submissions/pile_o_logistics/'
 ############################### Define functions ##############################
 
 def feat_importances(frst, feats):
@@ -20,7 +19,7 @@ def feat_importances(frst, feats):
     print outputs
 
 
-def create_val_and_train(df, seed=42,  split_rt = .20):
+def create_val_and_train(df, seed=42,  split_rt=.20):
     """
         Creates two samples (generally used to create
         train and validation samples)
@@ -52,45 +51,79 @@ def create_feat_list(df, non_features):
         feats.remove(var)
     return feats
 
-def add_prediction(df, model):
-    df_x = df.drop('QuoteConversion_Flag', axis=1).values
-    return model.predict_proba(df_x)[:, 1]
+def add_preds(val, test, model):
+    val_preds = model.predict_proba(val)[:, 1]
+    test_preds = model.predict_proba(test)[:, 1]
+    return val_preds, test_preds
+
+
+def add_preds_noproba(val, test, model):
+    val_preds = model.predict(val)
+    test_preds =  model.predict(test)
+    return val_preds, test_preds
+
 
 def load_append(PATH):
     train = pd.read_csv(PATH + 'clean_train.csv')
     test = pd.read_csv(PATH + 'clean_test.csv')
     return train, test
 
+
+def handle_scores(all_scores, preds):
+    score = roc_auc_score(val.QuoteConversion_Flag, val[preds])
+    all_scores += score
+    print "Score for seed {0}: {1}".format(seed, score)
+    return all_scores
+
+
+def normalize_cols(df):
+    for col in df.columns:
+        if col in ['QuoteConversion_Flag', 'QuoteNumber']:
+            continue
+        elif df[col].std() > 0:
+            df[col] = (df[col]-df[col].mean())/df[col].std()
+        else:
+            df[col] = 0
+            print col
+    return df
+
+def select_cols(col_list, pct=.4):
+    chosen = [(x < pct)[0] for x in list(np.random.rand(len(col_list), 1))]
+    return col_list[chosen]
+
+
 ############################### Executions ##############################
 
 train, test = load_append(DATA)
+# Normalize columns
+train = normalize_cols(train)
+test = normalize_cols(test)
+
 all_preds = []
 all_scores = 0
 
-for i, seed in enumerate([42]):
-    modeling, val = create_val_and_train(train, seed=seed)
-    X = modeling.drop('QuoteConversion_Flag', axis=1).values
-    y = modeling.QuoteConversion_Flag.values
+for i, loop in enumerate([42, 417, 1, 2, 3, 4, 5]):
+    modeling, val = create_val_and_train(train, seed=loop, split_rt=.15)
+    drop_cols = ['QuoteConversion_Flag', 'is_train', 'QuoteNumber']
+    X_cln = modeling.drop(drop_cols, axis=1)
+    y = modeling.QuoteConversion_Flag
+    feats = select_cols(X_cln.columns, .95)
+    val_cln = val[feats]
+    test_cln = test[feats]
+    xgb_model = LogisticRegression(penalty='l2', C=1)
+    xgb_model.fit(X_cln[feats].values, y.values)
 
-    clf = xgb.XGBClassifier(n_estimators=520, nthread=-1, max_depth=12,
-                            learning_rate=.025, silent=True, subsample=0.6,
-                            colsample_bytree=0.7)
+    name1 = 'pred' + str(loop)
+    val[name1], test[name1] = add_preds(val_cln, test_cln, xgb_model)
+    all_scores = handle_scores(all_scores, name1)
 
-    xgb_model = clf.fit(X, y, eval_metric="auc")
+    all_preds.append(name1)
 
-    name = 'pred' + str(seed)
+    print "Overall after {0} loops: {1}".format(i+1, all_scores/(i+1))
 
-    all_preds.append(name)
-    val[name] = add_prediction(val, xgb_model)
-    test[name] = add_prediction(test, xgb_model)
-
-    score = roc_auc_score(val.QuoteConversion_Flag, val[name])
-    all_scores += score
-    print "Score for seed {0}: {1}".format(seed, score)
-    print "Overall after {0} loops: {1}".format(i+1, all_scores/(1+i))
 
 title_score = int(10000*all_scores/(i+1))
-submission_title = 'running_12deep_score{0}.csv'.format(title_score)
+submission_title = 'running_10logitsticbetter_score{0}.csv'.format(title_score)
 keep_cols = ['QuoteNumber', 'QuoteConversion_Flag']
 test['QuoteConversion_Flag'] = test[all_preds].mean(axis=1)
 test[keep_cols].to_csv(SUBM + submission_title, index=False)
