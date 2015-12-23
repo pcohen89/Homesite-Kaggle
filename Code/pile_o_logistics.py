@@ -2,10 +2,11 @@
 import os
 import pandas as pd
 import xgboost as xgb
+from xgboost import XGBClassifier as Boost
 import numpy as np
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression, RidgeCV
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier as Forest
 
 ############################### Define Globals ##############################
 ROOT = os.path.dirname(os.path.realpath('__file__'))
@@ -17,7 +18,7 @@ def feat_importances(frst, feats):
     outputs = pd.DataFrame({'feats': feats,
                             'weight': frst.feature_importances_})
     outputs = outputs.sort(columns='weight', ascending=False)
-    print outputs
+    return outputs
 
 
 def create_val_and_train(df, seed=42,  split_rt=.20):
@@ -46,11 +47,13 @@ def create_val_and_train(df, seed=42,  split_rt=.20):
     trn_for_mods = trn_for_mods.drop('rand_vals', axis=1)
     return trn_for_mods, trn_for_val
 
+
 def create_feat_list(df, non_features):
     feats = list(df.columns.values)
     for var in non_features:
         feats.remove(var)
     return feats
+
 
 def add_preds(v, t, model):
     val_preds = model.predict_proba(v)[:, 1]
@@ -65,15 +68,15 @@ def add_preds_noproba(val, test, model):
 
 
 def load_append(PATH):
-    train = pd.read_csv(PATH + 'clean_train.csv')
-    test = pd.read_csv(PATH + 'clean_test.csv')
+    train = pd.read_csv(PATH + 'train_wints.csv')
+    test = pd.read_csv(PATH + 'test_wints.csv')
     return train, test
 
 
 def handle_scores(all_scores, preds):
     score = roc_auc_score(val.QuoteConversion_Flag, val[preds])
     all_scores += score
-    print "Score for seed {0}: {1}".format(seed, score)
+    print "Score for preds {0}: {1}".format(preds, score)
     return all_scores
 
 
@@ -99,6 +102,11 @@ def create_x_and_y(df):
     y = df.QuoteConversion_Flag
     return X, y
 
+def predict_into_stage2(mod, feats, nm):
+    val_X[nm], test_X[nm] = add_preds(val[feats], test[feats], mod)
+    log_X[nm] = mod.predict_proba(log_X[feats])[:, 1]
+
+
 ############################### Executions ##############################
 
 train, test = load_append(DATA)
@@ -106,33 +114,46 @@ train, test = load_append(DATA)
 train = normalize_cols(train)
 test = normalize_cols(test)
 
+target = 'QuoteConversion_Flag'
+
+stage1_models = {
+    'stage1_xgb_preds':
+        Boost(n_estimators=180, nthread=3, max_depth=20, learning_rate=.008,
+              silent=True, subsample=.8,  colsample_bytree=0.7),
+    'stage1_logistic': LogisticRegression(penalty='l2', C=.02),
+    'stage1_frst_preds': Forest(n_estimators=50, max_depth=28, n_jobs=4),
+}
+
 all_preds = []
 all_scores = 0
-
-for i, loop in enumerate([42, 417, 1, 2, 3, 4, 5]):
+all_seeds = [42, 417, 1, 2, 3, 4, 5]
+for i, loop in enumerate(all_seeds):
     mod_train, val = create_val_and_train(train, seed=loop, split_rt=.15)
     log_df, frst_df = create_val_and_train(mod_train, seed=loop, split_rt=.15)
 
     log_X, log_y = create_x_and_y(log_df)
     frst_X, frst_y = create_x_and_y(frst_df)
 
-    feats = select_cols(log_X.columns, .95)
+    feats = list(log_X.columns)
+    stage2_feats = list(log_X.columns)
 
     val_X = val[feats]
     test_X = test[feats]
 
-    frst = RandomForestClassifier(n_estimators=150, max_depth=20, n_jobs=2)
-    frst.fit(frst_X[feats], frst_y)
+    for nm, model in stage1_models.iteritems():
+        model.fit(frst_X[feats], frst_y)
+        val_X[nm], test_X[nm] = add_preds(val[feats], test[feats], model)
+        log_X[nm] = model.predict_proba(log_X[feats])[:, 1]
+        stage2_feats.append(nm)
+        score = roc_auc_score(val[target], val_X[nm])
+        print "%s scores: %s" % (nm, score)
 
-    val_X['stage1'], test_X['stage1'] = add_preds(val_X, test_X, frst)
-    log_X['stage1'] = frst.predict_proba(log_X[feats])[:, 1]
-    feats.append('stage1')
-
-    logit = LogisticRegression(penalty='l2', C=1)
-    logit.fit(log_X[feats].values, log_y.values)
+    logit = LogisticRegression(penalty='l1', C=.5)
+    logit.fit(log_X[stage2_feats].values, log_y.values)
 
     name1 = 'pred' + str(loop)
-    val[name1], test[name1] = add_preds(val_X, test_X, logit)
+    val[name1], test[name1] = add_preds(val_X[stage2_feats],
+                                        test_X[stage2_feats], logit)
     all_scores = handle_scores(all_scores, name1)
 
     all_preds.append(name1)
