@@ -118,11 +118,16 @@ target = 'QuoteConversion_Flag'
 
 stage1_models = {
     'stage1_xgb_preds':
-        Boost(n_estimators=180, nthread=3, max_depth=20, learning_rate=.008,
+        Boost(n_estimators=1800, nthread=3, max_depth=20, learning_rate=.008,
               silent=True, subsample=.8,  colsample_bytree=0.7),
     'stage1_logistic': LogisticRegression(penalty='l2', C=.02),
-    'stage1_frst_preds': Forest(n_estimators=50, max_depth=28, n_jobs=4),
+    'stage1_frst_preds': Forest(n_estimators=200, max_depth=28, n_jobs=4)
 }
+
+for i in range(30):
+    nm = 'stage1_tree%s_preds' % str(i)
+    stage1_models[nm] = Forest(n_estimators=2, max_depth=6, max_features=30,
+                               n_jobs=4)
 
 all_preds = []
 all_scores = 0
@@ -148,6 +153,7 @@ for i, loop in enumerate(all_seeds):
         score = roc_auc_score(val[target], val_X[nm])
         print "%s scores: %s" % (nm, score)
 
+
     logit = LogisticRegression(penalty='l1', C=.5)
     logit.fit(log_X[stage2_feats].values, log_y.values)
 
@@ -155,16 +161,15 @@ for i, loop in enumerate(all_seeds):
     val[name1], test[name1] = add_preds(val_X[stage2_feats],
                                         test_X[stage2_feats], logit)
     all_scores = handle_scores(all_scores, name1)
-
     all_preds.append(name1)
-
     print "Overall after {0} loops: {1}".format(i+1, all_scores/(i+1))
 
 
 title_score = int(10000*all_scores/(i+1))
-submission_title = 'running_10logitwtree_score{0}.csv'.format(title_score)
+submission_title = '{0}running_10logitwtree_score.csv'.format(title_score)
 keep_cols = ['QuoteNumber', 'QuoteConversion_Flag']
 test['QuoteConversion_Flag'] = test[all_preds].mean(axis=1)
+test.QuoteNumber = abs(test.QuoteNumber)
 test[keep_cols].to_csv(SUBM + submission_title, index=False)
 
 
